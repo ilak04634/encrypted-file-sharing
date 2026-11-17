@@ -6,7 +6,26 @@ import secrets
 from Crypto.Util.number import getPrime, isPrime
 
 
+# 'GENERAL' MODULE (Choosing between Classic Diffie-Hellman and Elliptic Curve Diffie-Hellman)
+
+def choosing_dh_algorithm() -> str:
+    while True:
+        print('1. Chose Classic Diffie-Hellman Algorithm')
+        print('2. Chose Elliptic Curve Diffie-Hellman Algorithm (ECDH)')
+        print('0. Exit')
+        print('Push the right button')
+        type_dh = input()
+        if type_dh == '0':
+            break
+        elif type_dh == '1':
+            return 'CLASSIC'
+        elif type_dh == '2':
+            return 'ECDH'
+        else:
+            continue
+
 # 'CLASSIC DIFFIE-HELLMAN' MODULE
+
 
 # RFC 3526: More Modular Exponential (MODP) Diffie-Hellman groups for Internet Key Exchange (IKE)
 RFC_groups = ['1536-bit MODP Group', '2048-bit MODP Group', '3072-bit MODP Group', '4096-bit MODP Group', '6144-bit MODP Group']
@@ -50,7 +69,6 @@ def generate_shared_key(prime: int, own_exp: int, shared_public_key: int) -> int
 
 
 # 'ELLIPTIC CURVE DIFFIE-HELLMAN' MATH MODULE
-
 
 def inverse_mod(inverse_coef, prime):
     if inverse_coef == 0:
@@ -109,33 +127,34 @@ def is_on_curve(point, a, b, prime):
 
 def generate_curve_parameters(bits=12):
     prime = getPrime(bits)
+
     while True:
         a = secrets.randbelow(prime - 1)
         b = secrets.randbelow(prime - 1)
         # Non-singularity check: 4A^3 + 27B^2 != 0
         discriminant = (4 * pow(a, 3, prime) + 27 * pow(b, 2, prime)) % prime
-        if discriminant != 0:
-            break
+        if discriminant == 0:
+            continue
 
-    all_points = []
-    y_squares = {pow(y, 2, prime): y for y in range(prime)}
+        all_points = []
+        y_squares = {pow(y, 2, prime): y for y in range(prime)}
 
-    for x in range(prime):
-        rhs = (pow(x, 3, prime) + a * x + b) % prime
-        if rhs in y_squares:
-            y = y_squares[rhs]
-            all_points.append((x, y))
+        for x in range(prime):
+            rhs = (pow(x, 3, prime) + a * x + b) % prime
+            if rhs in y_squares:
+                y = y_squares[rhs]
+                all_points.append((x, y))
 
-    # Total ordering of a group (including the point at infinity)
-    total_group_order = len(all_points) * 2 + 1
+        # Total ordering of a group (including the point at infinity)
+        total_group_order = len(all_points) * 2 + 1
 
-    # Shuffle the points to select a random generator
-    random.shuffle(all_points)
+        # Shuffle the points to select a random generator
+        random.shuffle(all_points)
 
-    while True:
+
         for candidate_G in all_points:
             G_order = None
-            for potential_n in range(total_group_order, 1, -1):
+            for potential_n in range(2, total_group_order + 1):
                 if total_group_order % potential_n == 0:
                     if isPrime(potential_n):
                         if point_mult(potential_n, candidate_G, a, prime) is None:
@@ -168,77 +187,18 @@ def generate_shared_secret(private_key, side_public_key, a, b, prime):
 # 'DERIVE TO AES' SHA256 MODULE
 
 
-def derive_aes_key(shared_key: int) -> bytes:
-    length = (shared_key.bit_length() + 7) // 8
-    key_bytes = shared_key.to_bytes(length, byteorder='big')
-    aes_key = hashlib.sha256(key_bytes).digest()
+def derive_aes_key(shared_key: int, dh_type) -> bytes:
+    global aes_key
+    if dh_type == 'CLASSIC':
+        length = (shared_key.bit_length() + 7) // 8
+        key_bytes = shared_key.to_bytes(length, byteorder='big')
+        aes_key = hashlib.sha256(key_bytes).digest()
+
+    if dh_type == 'ECDH':
+        shared_X, shared_Y = shared_key
+        byte_len = (max(shared_X, shared_Y).bit_length() + 7) // 8 or 1
+        x_bytes = shared_X.to_bytes(byte_len, byteorder="big")
+        y_bytes = shared_Y.to_bytes(byte_len, byteorder="big")
+        aes_key = hashlib.sha256(x_bytes + y_bytes).digest()
+
     return aes_key
-
-
-# DEMONSTRATION
-
-
-if __name__ == "__main__":
-    print("Шаг 1: Генерация параметров эллиптической кривой...")
-    P_MOD, A, B, G_X, G_Y, N_ORDER = generate_curve_parameters()
-
-    print("\n" + "=" * 50)
-    print("ГЕНЕРАЦИЯ ЗАВЕРШЕНА! ВАЛИДНЫЕ ПАРАМЕТРЫ КРИВОЙ:")
-    print("=" * 50)
-    print(f"P_MOD   = {P_MOD} ({hex(P_MOD)})")
-    print(f"A       = {A}")
-    print(f"B       = {B}")
-    print(f"G_X     = {G_X} ({hex(G_X)})")
-    print(f"G_Y     = {G_Y} ({hex(G_Y)})")
-    print(f"N_ORDER = {N_ORDER} ({hex(N_ORDER)})")
-    print("=" * 50)
-
-    # Базовые математические проверки
-    print("\n[Проверка параметров кривой]")
-    is_g_valid = is_on_curve((G_X, G_Y), A, B, P_MOD)
-    print(f"Проверка 1 (Базовая точка G лежит на кривой): {is_g_valid}")
-
-    is_zero = point_mult(N_ORDER, (G_X, G_Y), A, P_MOD) is None
-    print(f"Проверка 2 (Порядок точки верный: N_ORDER * G == None): {is_zero}")
-
-    # Симуляция обмена ключами ECDH
-    print("\n[Симуляция протокола Диффи-Хеллмана (ECDH)]")
-
-    # 1. Алиса генерирует свои ключи
-    alice_private, alice_public = generate_keypair(G_X, G_Y, N_ORDER, A, P_MOD)
-    print(f"\n Ключи Алисы:")
-    print(f" -> Приватный (a): {alice_private}")
-    print(f" -> Публичный  (A): {alice_public}")
-
-    # 2. Боб генерирует свои ключи
-    bob_private, bob_public = generate_keypair(G_X, G_Y, N_ORDER, A, P_MOD)
-    print(f"\n Ключи Боба:")
-    print(f" -> Приватный (b): {bob_private}")
-    print(f" -> Публичный  (B): {bob_public}")
-
-    # 3. Перекрестное вычисление Общего Секрета (Shared Secret)
-    # Алиса берет публичный ключ Боба и свой приватный ключ
-    alice_shared_secret = generate_shared_secret(alice_private, bob_public, A, B, P_MOD)
-
-    # Боб берет публичный ключ Алисы и свой приватный ключ
-    bob_shared_secret = generate_shared_secret(bob_private, alice_public, A, B, P_MOD)
-
-    print("\n" + "=" * 50)
-    print("РЕЗУЛЬТАТ ОБМЕНА СЕКРЕТАМИ:")
-    print("=" * 50)
-    print(f"Секрет, вычисленный Алисой (a * B): {alice_shared_secret}")
-    print(f"Секрет, вычисленный Бобом  (b * A): {bob_shared_secret}")
-
-    # Финальный вердикт
-    success = alice_shared_secret == bob_shared_secret
-    print(f"Совпадение секретов: {success}")
-    print("=" * 50)
-
-    if success:
-        print("🎉 УСПЕХ! Протокол ECDH работает корректно. Общий секрет успешно установлен.")
-    else:
-        print("❌ ОШИБКА! Математические секреты не совпали.")
-
-    aes_key = derive_aes_key(bob_shared_secret).decode('latin-1')
-
-    print(aes_key, f"Длина ключа: {len(aes_key) * 8} бит")
